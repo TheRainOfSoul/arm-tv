@@ -242,8 +242,11 @@ abstract class DleProvider : MainAPI() {
                 Regex("""https?://[^,\s]+""").findAll(fileVal).map { "" to it.value }.toList()
             }
             for ((label, url) in entries) {
+                // CDN потока часто отвергает кросс-доменный referer эмбеда (hayertv → 403).
+                // Свой origin ссылки CDN принимает всегда — берём его.
+                val streamReferer = Regex("""^https?://[^/]+""").find(url)?.value ?: ""
                 if (url.contains(".m3u8") && label.isBlank()) {
-                    M3u8Helper.generateM3u8(name, url, referer).forEach(callback)
+                    M3u8Helper.generateM3u8(name, url, streamReferer).forEach(callback)
                 } else {
                     callback(
                         newExtractorLink(
@@ -252,7 +255,7 @@ abstract class DleProvider : MainAPI() {
                             url,
                             if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
                         ) {
-                            this.referer = referer
+                            this.referer = streamReferer
                             this.quality = getQualityFromName(label)
                         }
                     )
