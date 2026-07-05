@@ -23,6 +23,7 @@ class FilmsBzProvider : DleProvider() {
         "$mainUrl/anime/" to "Անիմե (Аниме)",
     )
 
-    // Реальный контейнер карточки films.bz.
-    override val cardSelector = "div.short"
+    // Реальный контейнер карточки films.bz — это <article class="short …">, НЕ div.
+    // Поэтому селектор по классу без тега (иначе каталог пуст).
+    override val cardSelector = ".short"
 }

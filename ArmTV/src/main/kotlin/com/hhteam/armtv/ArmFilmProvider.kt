@@ -25,6 +25,6 @@ class ArmFilmProvider : DleProvider() {
         "$hy/hayeren-multer/" to "Մուլտֆիլմեր (Мультфильмы)",
     )
 
-    // Реальный контейнер карточки armfilm.
-    override val cardSelector = "div.shortstory"
+    // Карточки armfilm: обычные div.shortstory + блок премьер article.shortstory-premiere.
+    override val cardSelector = ".shortstory, .shortstory-premiere"
 }
