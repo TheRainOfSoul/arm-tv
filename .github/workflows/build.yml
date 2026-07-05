@@ -61,6 +61,8 @@ jobs:
           # Обязательные артефакты
           cp **/build/*.cs3 "$GITHUB_WORKSPACE/builds/"
           cp build/plugins.json "$GITHUB_WORKSPACE/builds/"
+          # Дескриптор репозитория — именно его URL добавляют в CloudStream (Add repository)
+          cp repo.json "$GITHUB_WORKSPACE/builds/"
           # jar для CloudStream не требуется — копируем, только если он есть
           cp **/build/*.jar "$GITHUB_WORKSPACE/builds/" 2>/dev/null || true
 
