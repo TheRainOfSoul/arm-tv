@@ -149,43 +149,49 @@ abstract class DleProvider : MainAPI() {
         val doc = app.get(data, referer = mainUrl).document
         val pageHtml = doc.html()
 
-        // 1) Явные iframe'ы/DLE-атрибуты + URL плеера, который JS вписывает в iframe
-        //    (films.bz → api.ortified.ws/embed, armfilm → armdb.org/player, hayertv → fsst.online/embed).
-        val fromTags = doc.select("iframe[src], iframe[data-src], [data-file], [data-player]")
-            .map {
-                it.attr("src")
-                    .ifBlank { it.attr("data-src") }
-                    .ifBlank { it.attr("data-file") }
-                    .ifBlank { it.attr("data-player") }
-            }
-        val fromJs = Regex("""["'](https?://[^"']*/(?:embed|player)/[^"']*)["']""")
-            .findAll(pageHtml).map { it.groupValues[1] }.toList()
+        // Озвучки/плееры films.bz: <div onclick="setURL('URL')">Метка</div> (Հայерен/Русский/Player N).
+        // Каждая метка — отдельный балансёр. Тянем с меткой, чтобы назвать источник и вывести армянский первым.
+        val labeled = Regex("""setURL\(['"]([^'"]+)['"]\)"[^>]*>([^<]+)""")
+            .findAll(pageHtml)
+            .map { it.groupValues[1].replace("&amp;", "&") to it.groupValues[2].trim() }
+            .toList()
 
-        val embeds = (fromTags + fromJs)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .map { httpsify(fixUrl(it)) }
-            .filterNot { u -> BLOCKED_EMBED_HOSTS.any { u.contains(it, ignoreCase = true) } }
-            .distinct()
+        // hayertv/armfilm: iframe/data-атрибуты + URL плеера, который JS вписывает в iframe (без метки).
+        val unlabeled = (
+            doc.select("iframe[src], iframe[data-src], [data-file], [data-player]").map {
+                it.attr("src").ifBlank { it.attr("data-src") }
+                    .ifBlank { it.attr("data-file") }.ifBlank { it.attr("data-player") }
+            } + Regex("""["'](https?://[^"']*/(?:embed|player)/[^"']*)["']""")
+                .findAll(pageHtml).map { it.groupValues[1] }
+        ).map { it to "" }
+
+        val embeds = (labeled + unlabeled.map { (u, l) -> u to l })
+            .map { (url, label) -> httpsify(fixUrl(url.trim())) to label }
+            .filter { it.first.startsWith("http") }
+            .filterNot { (u, _) -> BLOCKED_EMBED_HOSTS.any { u.contains(it, ignoreCase = true) } }
+            .distinctBy { it.first }
+            // Армянскую озвучку — первой (по умолчанию пользователю нужен армянский).
+            .sortedByDescending { isArmenianLabel(it.second) }
             .take(8)
 
-        val targets = if (embeds.isNotEmpty()) embeds else listOf(data)
+        val targets = if (embeds.isNotEmpty()) embeds else listOf(data to "")
 
-        // 2) Прямое извлечение из Playerjs-конфига эмбеда (быстро, без WebView).
+        // Прямое извлечение (Playerjs / VenomPlayer / прямой m3u8) — быстро, без WebView.
         var found = false
-        for (target in targets) {
+        for ((target, label) in targets) {
             try {
                 val body = app.get(target, referer = mainUrl).text
-                if (extractFromEmbed(body, target, callback)) found = true
+                if (extractFromEmbed(body, target, label, callback)) found = true
             } catch (e: Exception) {
                 logError(e)
             }
         }
         if (found) return true
 
-        // 3) Фолбэк: WebView-сниффер (для балансёров, отдающих поток только сетевым запросом).
-        for (target in targets) {
+        // Фолбэк: WebView-сниффер (для балансёров, отдающих поток только сетевым запросом).
+        for ((target, label) in targets) {
             try {
+                val src = sourceName(label)
                 val resolved = app.get(
                     target,
                     referer = mainUrl,
@@ -196,11 +202,16 @@ abstract class DleProvider : MainAPI() {
                 ).url
                 when {
                     resolved.contains(".m3u8") -> {
-                        M3u8Helper.generateM3u8(name, resolved, target).forEach(callback); found = true
+                        callback(
+                            newExtractorLink(src, src, resolved, ExtractorLinkType.M3U8) {
+                                this.referer = originOf(resolved).ifBlank { target }
+                            }
+                        )
+                        found = true
                     }
                     resolved.contains(".mp4") -> {
                         callback(
-                            newExtractorLink(name, name, resolved, ExtractorLinkType.VIDEO) {
+                            newExtractorLink(src, src, resolved, ExtractorLinkType.VIDEO) {
                                 this.referer = target
                                 this.quality = Qualities.Unknown.value
                             }
@@ -215,6 +226,16 @@ abstract class DleProvider : MainAPI() {
         return found
     }
 
+    /** Имя источника в списке CloudStream: провайдер + метка озвучки (если есть). */
+    private fun sourceName(label: String) = if (label.isBlank()) name else "$name • $label"
+
+    /** Метка армянской озвучки (для приоритета/сортировки). */
+    private fun isArmenianLabel(label: String) =
+        label.contains("Հայ", true) || label.contains("арм", true) || label.contains("arm", true)
+
+    /** scheme+host из URL (для referer потока). */
+    private fun originOf(url: String) = Regex("""^https?://[^/]+""").find(url)?.value ?: ""
+
     /**
      * Достаёт ссылки из HTML эмбеда: Playerjs `file:` (в т.ч. atob(base64)) формата
      * "[480p]url,[720p]url" или одиночный URL; либо прямой master.m3u8 в HTML (ortified).
@@ -222,8 +243,25 @@ abstract class DleProvider : MainAPI() {
     private suspend fun extractFromEmbed(
         body: String,
         referer: String,
+        label: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val src = sourceName(label)
+        val origin = originOf(referer)
+
+        // VenomPlayer (арм. озвучка films.bz, напр. whinehouse): "hls":"/relative/master.m3u8".
+        val hls = Regex("\"hls\"\\s*:\\s*\"([^\"]+\\.m3u8[^\"]*)\"").find(body)?.groupValues?.get(1)
+        if (hls != null) {
+            val abs = if (hls.startsWith("http")) hls
+                      else origin + (if (hls.startsWith("/")) hls else "/$hls")
+            callback(
+                newExtractorLink(src, src, abs, ExtractorLinkType.M3U8) {
+                    this.referer = originOf(abs).ifBlank { origin }
+                }
+            )
+            return true
+        }
+
         val b64 = Regex("""file\s*:\s*atob\(\s*["']([A-Za-z0-9+/=]+)["']\s*\)""")
             .find(body)?.groupValues?.get(1)
         val fileVal = if (b64 != null) {
@@ -241,21 +279,21 @@ abstract class DleProvider : MainAPI() {
             } else {
                 Regex("""https?://[^,\s]+""").findAll(fileVal).map { "" to it.value }.toList()
             }
-            for ((label, url) in entries) {
+            for ((quality, url) in entries) {
                 // CDN потока часто отвергает кросс-доменный referer эмбеда (hayertv → 403).
                 // Свой origin ссылки CDN принимает всегда — берём его.
-                val streamReferer = Regex("""^https?://[^/]+""").find(url)?.value ?: ""
+                val streamReferer = originOf(url)
                 // Отдаём ссылку целиком (для m3u8 — type M3U8): ExoPlayer сам сведёт
                 // отдельные аудио/видео дорожки и покажет выбор дорожки и качества.
                 callback(
                     newExtractorLink(
-                        name,
-                        if (label.isBlank()) name else "$name $label",
+                        src,
+                        if (quality.isBlank()) src else "$src $quality",
                         url,
                         if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
                     ) {
                         this.referer = streamReferer
-                        this.quality = getQualityFromName(label)
+                        this.quality = getQualityFromName(quality)
                     }
                 )
                 any = true
@@ -271,7 +309,7 @@ abstract class DleProvider : MainAPI() {
             // без звука — поэтому отдаём master целиком, ExoPlayer сведёт видео+аудио
             // и даст выбрать дорожку/качество прямо в плеере.
             callback(
-                newExtractorLink(name, name, direct, ExtractorLinkType.M3U8) {
+                newExtractorLink(src, src, direct, ExtractorLinkType.M3U8) {
                     this.referer = referer
                 }
             )
