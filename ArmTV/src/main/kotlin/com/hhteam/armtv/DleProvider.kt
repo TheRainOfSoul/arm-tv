@@ -1,5 +1,6 @@
 package com.hhteam.armtv
 
+import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.WebViewResolver   // переехал в пакет network
@@ -131,14 +132,13 @@ abstract class DleProvider : MainAPI() {
     // ------------------------------- Извлечение потока -------------------------------
 
     /**
-     * Универсальный сниффер. Не парсит зашифрованный плеер вручную, а:
-     *   1) собирает URL встроенных плееров (iframe / data-атрибуты DLE-балансёра);
-     *   2) грузит их в скрытом WebView (WebViewResolver), даёт JS отработать
-     *      и ЛОВИТ .m3u8/.mp4 из сетевых запросов;
-     *   3) master.m3u8 разворачивается в несколько качеств (M3u8Helper) —
-     *      это и есть «смена качества» в плеере CloudStream.
-     *
-     * Реклама и попапы сюда не попадают: в плеер уходит ТОЛЬКО ссылка на видео.
+     * Извлечение потока. У всех трёх сайтов плеер — Playerjs, и ссылка на поток лежит
+     * прямо в его конфиге (file: "…", часто завёрнута в atob(base64)), а НЕ в сетевом
+     * запросе. Поэтому WebView-сниффер её не видит: Playerjs грузит поток только по клику Play.
+     * Стратегия:
+     *   1) собрать URL балансёра (iframe/data-атрибуты + JS-инъекции: ortified.ws, armdb.org, fsst.online);
+     *   2) вытащить file: из HTML эмбеда (Playerjs / прямой m3u8) — быстро, без WebView;
+     *   3) если не вышло — фолбэк: WebView-сниффер.
      */
     override suspend fun loadLinks(
         data: String,
@@ -149,18 +149,15 @@ abstract class DleProvider : MainAPI() {
         val doc = app.get(data, referer = mainUrl).document
         val pageHtml = doc.html()
 
-        // 1) Явные iframe'ы и data-атрибуты DLE-балансёра (hayertv: armdb.net, fsst.online).
-        val fromTags = doc.select("iframe[src], iframe[data-src], [data-file], [data-player], [data-src]")
+        // 1) Явные iframe'ы/DLE-атрибуты + URL плеера, который JS вписывает в iframe
+        //    (films.bz → api.ortified.ws/embed, armfilm → armdb.org/player, hayertv → fsst.online/embed).
+        val fromTags = doc.select("iframe[src], iframe[data-src], [data-file], [data-player]")
             .map {
                 it.attr("src")
                     .ifBlank { it.attr("data-src") }
                     .ifBlank { it.attr("data-file") }
                     .ifBlank { it.attr("data-player") }
             }
-
-        // 2) URL плеера, который JS вписывает в iframe уже после загрузки страницы:
-        //    films.bz → api.ortified.ws/embed/movie/{id}, armfilm → armplayer.armsites.am/player/…
-        //    В сыром HTML такого iframe.src нет, поэтому достаём регуляркой из инлайн-скриптов.
         val fromJs = Regex("""["'](https?://[^"']*/(?:embed|player)/[^"']*)["']""")
             .findAll(pageHtml).map { it.groupValues[1] }.toList()
 
@@ -172,24 +169,23 @@ abstract class DleProvider : MainAPI() {
             .distinct()
             .take(8)
 
-        // Фолбэк: если явных эмбедов нет — нюхаем саму страницу деталей.
         val targets = if (embeds.isNotEmpty()) embeds else listOf(data)
 
+        // 2) Прямое извлечение из Playerjs-конфига эмбеда (быстро, без WebView).
         var found = false
         for (target in targets) {
             try {
-                // a) Прямой разбор: у части балансёров master.m3u8 лежит прямо в HTML эмбеда
-                //    (напр. ortified.ws). Токен в URL живёт недолго — тянем на момент запуска.
-                val embedBody = app.get(target, referer = mainUrl).text
-                val directM3u8 = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""").find(embedBody)?.value
-                if (directM3u8 != null) {
-                    M3u8Helper.generateM3u8(name, directM3u8, target).forEach(callback)
-                    found = true
-                    continue
-                }
+                val body = app.get(target, referer = mainUrl).text
+                if (extractFromEmbed(body, target, callback)) found = true
+            } catch (e: Exception) {
+                logError(e)
+            }
+        }
+        if (found) return true
 
-                // b) Иначе — универсальный WebView-сниффер: JS сам догрузит поток
-                //    (и заодно проходит DLE-antibot: исполняет JS и ставит куку).
+        // 3) Фолбэк: WebView-сниффер (для балансёров, отдающих поток только сетевым запросом).
+        for (target in targets) {
+            try {
                 val resolved = app.get(
                     target,
                     referer = mainUrl,
@@ -198,20 +194,13 @@ abstract class DleProvider : MainAPI() {
                         additionalUrls = listOf(Regex("""\.m3u8|\.mp4"""))
                     )
                 ).url
-
                 when {
                     resolved.contains(".m3u8") -> {
-                        M3u8Helper.generateM3u8(name, resolved, target).forEach(callback)
-                        found = true
+                        M3u8Helper.generateM3u8(name, resolved, target).forEach(callback); found = true
                     }
                     resolved.contains(".mp4") -> {
                         callback(
-                            newExtractorLink(
-                                source = name,
-                                name = name,
-                                url = resolved,
-                                type = ExtractorLinkType.VIDEO,
-                            ) {
+                            newExtractorLink(name, name, resolved, ExtractorLinkType.VIDEO) {
                                 this.referer = target
                                 this.quality = Qualities.Unknown.value
                             }
@@ -224,6 +213,62 @@ abstract class DleProvider : MainAPI() {
             }
         }
         return found
+    }
+
+    /**
+     * Достаёт ссылки из HTML эмбеда: Playerjs `file:` (в т.ч. atob(base64)) формата
+     * "[480p]url,[720p]url" или одиночный URL; либо прямой master.m3u8 в HTML (ortified).
+     */
+    private suspend fun extractFromEmbed(
+        body: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val b64 = Regex("""file\s*:\s*atob\(\s*["']([A-Za-z0-9+/=]+)["']\s*\)""")
+            .find(body)?.groupValues?.get(1)
+        val fileVal = if (b64 != null) {
+            runCatching { String(Base64.decode(b64, Base64.DEFAULT)) }.getOrNull()
+        } else {
+            Regex("""["']?file["']?\s*:\s*["']([^"']+)["']""").find(body)?.groupValues?.get(1)
+        }
+
+        var any = false
+        if (fileVal != null && fileVal.contains("http")) {
+            // Playerjs: "[480p]url1,[720p]url2" либо просто "url".
+            val entries = if (fileVal.contains("[")) {
+                Regex("""\[([^\]]*)]\s*(https?://[^,\s]+)""")
+                    .findAll(fileVal).map { it.groupValues[1] to it.groupValues[2] }.toList()
+            } else {
+                Regex("""https?://[^,\s]+""").findAll(fileVal).map { "" to it.value }.toList()
+            }
+            for ((label, url) in entries) {
+                if (url.contains(".m3u8") && label.isBlank()) {
+                    M3u8Helper.generateM3u8(name, url, referer).forEach(callback)
+                } else {
+                    callback(
+                        newExtractorLink(
+                            name,
+                            if (label.isBlank()) name else "$name $label",
+                            url,
+                            if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                        ) {
+                            this.referer = referer
+                            this.quality = getQualityFromName(label)
+                        }
+                    )
+                }
+                any = true
+            }
+        }
+        if (any) return true
+
+        // Прямой m3u8 в HTML (напр. ortified.ws у films.bz).
+        val direct = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""").find(body)?.value
+        if (direct != null) {
+            M3u8Helper.generateM3u8(name, direct, referer).forEach(callback)
+            return true
+        }
+        return false
     }
 
     companion object {
