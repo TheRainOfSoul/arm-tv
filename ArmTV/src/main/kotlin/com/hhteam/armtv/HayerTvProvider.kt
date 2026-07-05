@@ -23,7 +23,8 @@ class HayerTvProvider : DleProvider() {
         "$mainUrl/multfilm-hayeren/" to "Մուլտֆիլմեր (Мультфильмы)",
     )
 
-    // Реальный контейнер карточки hayertv. Меню/служебные .item отсекаются
-    // в toSearchResult по признаку ссылки на страницу деталей (/{цифры}-...).
-    override val cardSelector = "div.item"
+    // Карточки основного списка категории: фильмы → .shortstory-news, сериалы/поиск → .short-collections.
+    // ВАЖНО: не использовать .item — это общий сайдбар-виджет «последнее», одинаковый на всех
+    // страницах (из-за него раньше во всех категориях были одни и те же фильмы).
+    override val cardSelector = "div.short-collections, div.shortstory-news"
 }

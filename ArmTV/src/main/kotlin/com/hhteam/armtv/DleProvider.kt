@@ -245,21 +245,19 @@ abstract class DleProvider : MainAPI() {
                 // CDN потока часто отвергает кросс-доменный referer эмбеда (hayertv → 403).
                 // Свой origin ссылки CDN принимает всегда — берём его.
                 val streamReferer = Regex("""^https?://[^/]+""").find(url)?.value ?: ""
-                if (url.contains(".m3u8") && label.isBlank()) {
-                    M3u8Helper.generateM3u8(name, url, streamReferer).forEach(callback)
-                } else {
-                    callback(
-                        newExtractorLink(
-                            name,
-                            if (label.isBlank()) name else "$name $label",
-                            url,
-                            if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                        ) {
-                            this.referer = streamReferer
-                            this.quality = getQualityFromName(label)
-                        }
-                    )
-                }
+                // Отдаём ссылку целиком (для m3u8 — type M3U8): ExoPlayer сам сведёт
+                // отдельные аудио/видео дорожки и покажет выбор дорожки и качества.
+                callback(
+                    newExtractorLink(
+                        name,
+                        if (label.isBlank()) name else "$name $label",
+                        url,
+                        if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                    ) {
+                        this.referer = streamReferer
+                        this.quality = getQualityFromName(label)
+                    }
+                )
                 any = true
             }
         }
@@ -268,7 +266,15 @@ abstract class DleProvider : MainAPI() {
         // Прямой m3u8 в HTML (напр. ortified.ws у films.bz).
         val direct = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""").find(body)?.value
         if (direct != null) {
-            M3u8Helper.generateM3u8(name, direct, referer).forEach(callback)
+            // Целый master (type M3U8): у films.bz/ortified аудио вынесено в отдельные
+            // EXT-X-MEDIA-дорожки (ru/fr). M3u8Helper бы разбил master на видео-варианты
+            // без звука — поэтому отдаём master целиком, ExoPlayer сведёт видео+аудио
+            // и даст выбрать дорожку/качество прямо в плеере.
+            callback(
+                newExtractorLink(name, name, direct, ExtractorLinkType.M3U8) {
+                    this.referer = referer
+                }
+            )
             return true
         }
         return false
