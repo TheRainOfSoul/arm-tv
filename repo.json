@@ -1,0 +1,9 @@
+{
+    "name": "ArmTV",
+    "description": "Армянские фильмы и сериалы: films.bz, hayertv.com, armfilm.co",
+    "manifestVersion": 1,
+    "iconUrl": "https://www.google.com/s2/favicons?domain=films.bz&sz=64",
+    "pluginLists": [
+        "https://raw.githubusercontent.com/TheRainOfSoul/arm-tv/builds/plugins.json"
+    ]
+}

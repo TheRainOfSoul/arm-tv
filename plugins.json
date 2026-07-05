@@ -1,0 +1,23 @@
+[
+    {
+        "iconUrl": "https://www.google.com/s2/favicons?domain=films.bz&sz=64",
+        "fileHash": "sha256-8da82fa6f92dfb97ddacc4df66348ef40e4ab7aa07faa7a6c06b4d28a3ab5bc5",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/TheRainOfSoul/arm-tv",
+        "fileSize": 36540,
+        "status": 3,
+        "language": "hy",
+        "authors": [
+            "hhteam"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 12,
+        "internalName": "ArmTV",
+        "description": "\u0410\u0440\u043c\u044f\u043d\u0441\u043a\u0438\u0435 \u0444\u0438\u043b\u044c\u043c\u044b \u0438 \u0441\u0435\u0440\u0438\u0430\u043b\u044b: films.bz, hayertv.com, armfilm.co",
+        "url": "https://raw.githubusercontent.com/TheRainOfSoul/arm-tv/builds/ArmTV.cs3",
+        "name": "ArmTV"
+    }
+]
