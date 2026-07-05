@@ -4,11 +4,12 @@ import com.lagradost.cloudstream3.mainPageOf
 
 /**
  * hayertv.com — DLE, серверный HTML.
- * Особенность: активен модуль /engine/modules/antibot/antibot.php (JS-кука).
- * Обычный app.get это переживает, а loadLinks в любом случае идёт через WebView,
- * который исполняет JS и проходит antibot автоматически.
+ * Карточка каталога: <div class="item"> с постером .image-poster и <a href title>.
+ * (Раньше каталог был пуст: старый селектор .shortstory не совпадал — реальный класс .item.)
+ * Плеер: несколько статических iframe (armdb.net/embed, fsst.online/embed) — их ловит
+ * WebView-сниффер в DleProvider.loadLinks.
  *
- * Категории (из разведки): /armyanskie-seriali/, /filmer-hayeren/, /multfilmy/, /telekanali/.
+ * Категории сверены по живому сайту.
  */
 class HayerTvProvider : DleProvider() {
     override var mainUrl = "https://hayertv.com"
@@ -17,11 +18,12 @@ class HayerTvProvider : DleProvider() {
     override val mainPage = mainPageOf(
         "$mainUrl/filmer-hayeren/" to "Հայերեն ֆիլմեր (Фильмы)",
         "$mainUrl/armyanskie-seriali/" to "Հայկական սերիալներ (Сериалы)",
-        "$mainUrl/doramy/" to "Դորամաներ (Дорамы)",
-        "$mainUrl/multfilmy/" to "Մուլտֆիլմեր (Мультфильмы)",
+        "$mainUrl/seriali-armyanskim-perevodom/" to "Սերիալներ (Рус. перевод)",
+        "$mainUrl/doramaarm/" to "Դորամաներ (Дорамы)",
+        "$mainUrl/multfilm-hayeren/" to "Մուլտֆիլմեր (Мультфильмы)",
     )
 
-    // TODO: сверить с реальным HTML hayertv.com.
-    override val cardSelector = "div.th-item, div.shortstory, div.short, article"
-    override val titleInCardSelector = "h6, h3, .th-title, .title"
+    // Реальный контейнер карточки hayertv. Меню/служебные .item отсекаются
+    // в toSearchResult по признаку ссылки на страницу деталей (/{цифры}-...).
+    override val cardSelector = "div.item"
 }

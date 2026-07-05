@@ -29,8 +29,8 @@ abstract class DleProvider : MainAPI() {
 
     // -------- Селекторы (переопределяемые в наследниках; дефолты — типовой DLE) --------
 
-    /** Контейнер одной карточки фильма/сериала в списках и в выдаче поиска. */
-    open val cardSelector = "div.th-item, div.shortstory, article.short-item, div.short, div.movie-item"
+    /** Контейнер одной карточки фильма/сериала. Наследники задают точный класс. */
+    open val cardSelector = "div.short, div.shortstory, div.item, article"
 
     /** Заголовок внутри карточки. */
     open val titleInCardSelector = "h6, h3, .th-title, .title, .short-title"
@@ -53,7 +53,7 @@ abstract class DleProvider : MainAPI() {
         // DLE-пагинация категорий: .../category/page/2/
         val url = if (page <= 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
         val doc = app.get(url, referer = mainUrl).document
-        val items = doc.select(cardSelector).mapNotNull { it.toSearchResult() }
+        val items = doc.select(cardSelector).mapNotNull { it.toSearchResult() }.distinctBy { it.url }
         return newHomePageResponse(request.name, items)
     }
 
@@ -73,7 +73,7 @@ abstract class DleProvider : MainAPI() {
                 "story" to query,
             )
         ).document
-        return doc.select(cardSelector).mapNotNull { it.toSearchResult() }
+        return doc.select(cardSelector).mapNotNull { it.toSearchResult() }.distinctBy { it.url }
     }
 
     // ------------------------------- Карточка -------------------------------
@@ -147,29 +147,52 @@ abstract class DleProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val doc = app.get(data, referer = mainUrl).document
+        val pageHtml = doc.html()
 
-        // Кандидаты: iframe'ы + типовые data-атрибуты DLE-балансёра.
-        val embeds = doc.select("iframe[src], iframe[data-src], [data-file], [data-player], [data-src]")
+        // 1) Явные iframe'ы и data-атрибуты DLE-балансёра (hayertv: armdb.net, fsst.online).
+        val fromTags = doc.select("iframe[src], iframe[data-src], [data-file], [data-player], [data-src]")
             .map {
                 it.attr("src")
                     .ifBlank { it.attr("data-src") }
                     .ifBlank { it.attr("data-file") }
                     .ifBlank { it.attr("data-player") }
             }
+
+        // 2) URL плеера, который JS вписывает в iframe уже после загрузки страницы:
+        //    films.bz → api.ortified.ws/embed/movie/{id}, armfilm → armplayer.armsites.am/player/…
+        //    В сыром HTML такого iframe.src нет, поэтому достаём регуляркой из инлайн-скриптов.
+        val fromJs = Regex("""["'](https?://[^"']*/(?:embed|player)/[^"']*)["']""")
+            .findAll(pageHtml).map { it.groupValues[1] }.toList()
+
+        val embeds = (fromTags + fromJs)
+            .map { it.trim() }
             .filter { it.isNotBlank() }
             .map { httpsify(fixUrl(it)) }
+            .filterNot { u -> BLOCKED_EMBED_HOSTS.any { u.contains(it, ignoreCase = true) } }
             .distinct()
+            .take(8)
 
-        // Фолбэк: если явных эмбедов нет — нюхаем саму страницу.
+        // Фолбэк: если явных эмбедов нет — нюхаем саму страницу деталей.
         val targets = if (embeds.isNotEmpty()) embeds else listOf(data)
 
         var found = false
         for (target in targets) {
             try {
+                // a) Прямой разбор: у части балансёров master.m3u8 лежит прямо в HTML эмбеда
+                //    (напр. ortified.ws). Токен в URL живёт недолго — тянем на момент запуска.
+                val embedBody = app.get(target, referer = mainUrl).text
+                val directM3u8 = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""").find(embedBody)?.value
+                if (directM3u8 != null) {
+                    M3u8Helper.generateM3u8(name, directM3u8, target).forEach(callback)
+                    found = true
+                    continue
+                }
+
+                // b) Иначе — универсальный WebView-сниффер: JS сам догрузит поток
+                //    (и заодно проходит DLE-antibot: исполняет JS и ставит куку).
                 val resolved = app.get(
                     target,
                     referer = mainUrl,
-                    // WebView проходит и DLE-antibot (hayertv), т.к. исполняет JS и ставит куку.
                     interceptor = WebViewResolver(
                         interceptUrl = Regex("""\.m3u8|\.mp4"""),
                         additionalUrls = listOf(Regex("""\.m3u8|\.mp4"""))
@@ -182,7 +205,6 @@ abstract class DleProvider : MainAPI() {
                         found = true
                     }
                     resolved.contains(".mp4") -> {
-                        // Новый API: newExtractorLink(...) { … } вместо устаревшего конструктора.
                         callback(
                             newExtractorLink(
                                 source = name,
@@ -204,15 +226,27 @@ abstract class DleProvider : MainAPI() {
         return found
     }
 
+    companion object {
+        /** Хосты рекламы/соцсетей/аналитики — это не видео-балансёры, пропускаем. */
+        private val BLOCKED_EMBED_HOSTS = listOf(
+            "youtube.", "youtu.be", "facebook.", "google.", "gstatic.", "doubleclick",
+            "yandex.", "vk.com", "ok.ru", "mail.ru", "caramel.am", "adfinity",
+            "telegram.", "twitter.", "instagram.", "disqus.", "gravatar.",
+        )
+    }
+
     // ------------------------------- Общий парсер карточки -------------------------------
 
     protected open fun Element.toSearchResult(): SearchResponse? {
-        val a = selectFirst("a[href]") ?: return null
-        val href = fixUrl(a.absUrl("href").ifBlank { a.attr("href") })
-        if (href.isBlank()) return null
+        // Берём именно ссылку на страницу деталей DLE: /{категория}/{id}-{slug}.html.
+        // Признак /{цифры}- отсекает меню и служебные блоки, попавшие под селектор.
+        val a = select("a[href]").firstOrNull { it.attr("href").contains(Regex("""/\d+-""")) }
+            ?: return null
+        val href = fixUrl(a.attr("href"))
 
-        val title = selectFirst(titleInCardSelector)?.text()?.trim()
-            ?: a.attr("title").ifBlank { selectFirst("img")?.attr("alt") }
+        val title = selectFirst(titleInCardSelector)?.text()?.trim().takeUnless { it.isNullOrBlank() }
+            ?: a.attr("title").takeUnless { it.isBlank() }
+            ?: selectFirst("img[alt]")?.attr("alt")?.trim().takeUnless { it.isNullOrBlank() }
             ?: return null
 
         val poster = fixUrlNull(

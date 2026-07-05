@@ -4,22 +4,25 @@ import com.lagradost.cloudstream3.mainPageOf
 
 /**
  * films.bz — DLE, серверный HTML, без antibot, без Cloudflare.
- * Карточки: <a> с <img src="/img-medium/uploads/posts/..."> и <h6> с названием.
- * Детали: /films/{id}-{slug}.html и /serial/{id}-{slug}.html
+ * Карточка каталога: <div class="short …"> с <a class="short_img" title="…"> и <img>.
+ * Детали: /films/{id}-{slug}.html, /serial/{id}-{slug}.html и т.п.
+ * Плеер: iframe.player, src которого JS выставляет на api.ortified.ws/embed/movie/{id}
+ * (разбирается в DleProvider.loadLinks).
+ *
+ * Категории сверены по живому сайту (детальные ссылки на главной).
  */
 class FilmsBzProvider : DleProvider() {
     override var mainUrl = "https://films.bz"
     override var name = "Films.bz"
 
-    // Ряды главного экрана (категории DLE). При необходимости — сверить URL по сайту.
     override val mainPage = mainPageOf(
         "$mainUrl/films/" to "Ֆիլմեր (Фильмы)",
         "$mainUrl/serial/" to "Սերիալներ (Сериалы)",
-        "$mainUrl/multfilmy/" to "Մուլտֆիլմեր (Мультфильмы)",
+        "$mainUrl/hayeren-targmanutyamb/" to "Հայերեն թարգմանությամբ",
+        "$mainUrl/cartoons/" to "Մուլտֆիլմեր (Мультфильмы)",
         "$mainUrl/anime/" to "Անիմե (Аниме)",
     )
 
-    // TODO: сверить с реальным HTML films.bz и уточнить при необходимости.
-    override val cardSelector = "div.th-item, div.shortstory, div.short, article"
-    override val titleInCardSelector = "h6, .th-title, .title"
+    // Реальный контейнер карточки films.bz.
+    override val cardSelector = "div.short"
 }

@@ -4,9 +4,11 @@ import com.lagradost.cloudstream3.mainPageOf
 
 /**
  * armfilm.co — DLE, локаль в пути: /hy/. Без Cloudflare.
- * На страницах присутствует трекер liveinternet.ru и соц-виджеты — они уже
- * попадут в адблок-лист (см. AdBlock-заметку в README); в плеер не проходят.
- * Серии: /hy/serialner/{id}-...-seria-N.html — соседние страницы.
+ * Карточка каталога: <div class="shortstory …"> (.short-title, .short-imgposter).
+ * Плеер: iframe, src которого JS выставляет на armplayer.armsites.am/player/…
+ * (разбирается в DleProvider.loadLinks). Реклама (ads.caramel.am) в плеер не проходит.
+ *
+ * Категории сверены по живому сайту.
  */
 class ArmFilmProvider : DleProvider() {
     override var mainUrl = "https://armfilm.co"
@@ -16,13 +18,13 @@ class ArmFilmProvider : DleProvider() {
     private val hy = "$mainUrl/hy"
 
     override val mainPage = mainPageOf(
-        "$hy/haykakan-filmer/" to "Հայկական ֆիլմեր (Фильмы)",
+        "$hy/hayeren-filmer/" to "Հայերեն ֆիլմեր (Фильмы)",
         "$hy/serialner/" to "Սերիալներ (Сериалы)",
+        "$hy/serialner-hayeren-tarkmanutyamb/" to "Սերիալներ (Հայ. թարգմ.)",
         "$hy/doramaner-hayeren/" to "Դորամաներ (Дорамы)",
-        "$hy/multfilmer/" to "Մուլտֆիլմեր (Мультфильмы)",
+        "$hy/hayeren-multer/" to "Մուլտֆիլմեր (Мультфильмы)",
     )
 
-    // TODO: сверить с реальным HTML armfilm.co/hy/.
-    override val cardSelector = "div.th-item, div.shortstory, div.short, article"
-    override val titleInCardSelector = "h6, h3, .th-title, .title"
+    // Реальный контейнер карточки armfilm.
+    override val cardSelector = "div.shortstory"
 }
