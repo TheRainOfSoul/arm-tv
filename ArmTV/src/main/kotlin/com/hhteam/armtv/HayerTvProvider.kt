@@ -41,8 +41,10 @@ class HayerTvProvider : DleProvider() {
     override suspend fun parseEpisodes(doc: Document, pageUrl: String): List<Episode> {
         val html = doc.html()
 
-        // (1) Новый шаблон: прямые mp4.
-        val direct = Regex("""\{\s*id:\s*\d+\s*,\s*title:\s*'([^']*)'\s*,\s*url:\s*'([^']*)'\s*}""")
+        // (1) Новый шаблон: прямые mp4. Без литеральных { }: движок regex Android (ICU)
+        // падает на непроэкранированной '}' ("Syntax error near index N"), а ключи
+        // id/title/url и так однозначно указывают на объект серии.
+        val direct = Regex("""id:\s*\d+\s*,\s*title:\s*'([^']*)'\s*,\s*url:\s*'([^']*)'""")
             .findAll(html)
             .map { it.groupValues[1].trim() to it.groupValues[2].trim() }
             .toList()
