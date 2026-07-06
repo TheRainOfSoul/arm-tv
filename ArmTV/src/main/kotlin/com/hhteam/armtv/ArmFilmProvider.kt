@@ -41,20 +41,39 @@ class ArmFilmProvider : DleProvider() {
     }
 
     /**
-     * У armfilm КАЖДАЯ серия — отдельная DLE-страница (…/serialner/{id}-{база}-seria-{N}.html),
-     * общей страницы сериала нет. Зато у сайта есть тег-листинг серий одного сериала:
-     *   /hy/serialner/{база}/            (и /page/2/, /page/3/…) — новые сверху, ~18 на страницу.
-     * Открыв любую серию, вытягиваем базу из слага и собираем все серии из тег-листинга
-     * (с пагинацией и ранним стопом). data каждого Episode — URL страницы серии; поток из неё
-     * достаёт обычный DLE-путь loadLinks (iframe armdb.org → Playerjs file:).
+     * У armfilm две разные раскладки сериалов:
+     *
+     *  A) Сериалы С ОЗВУЧКОЙ (/serialner-hayeren-tarkmanutyamb/): один DLE-артикул, разбитый
+     *     на страницы-серии через <select name="sel_page"> (page,1,{slug}.html … page,N,…).
+     *     Опции селектора — прямые URL серий.
+     *
+     *  B) Обычные сериалы (/serialner/): КАЖДАЯ серия — отдельная страница
+     *     (…/{id}-{база}-seria-{N}.html), общего артикула нет. Но есть тег-листинг серий
+     *     сериала: /hy/{категория}/{база}/ (+ /page/2/…) — новые сверху, ~18 на страницу.
+     *
+     * data каждого Episode — URL страницы серии; поток из неё достаёт обычный DLE-путь
+     * loadLinks (iframe armdb.org → Playerjs file:).
      */
     override suspend fun parseEpisodes(doc: Document, pageUrl: String): List<Episode> {
+        // --- A) Артикул с пагинацией серий (<select name="sel_page">). ---
+        val paged = doc.select("select[name=sel_page] option")
+            .map { it.attr("value").trim() to it.text().trim() }
+            .filter { it.first.startsWith("http") }
+        if (paged.size >= 2) {
+            return paged.mapNotNull { (url, label) ->
+                val n = Regex("""\d+""").find(label)?.value?.toIntOrNull()
+                buildEpisode("Սերիա ${label.ifBlank { n?.toString() ?: "" }}".trim(), url, epNum = n)
+            }
+        }
+
+        // --- B) Тег-листинг отдельных серий (слаг вида {id}-{база}-seria-{N}). ---
         val slug = pageUrl.substringAfterLast('/').removeSuffix(".html")
         val base = Regex("""^\d+-(.+?)-seri[ya]+-\d+$""").find(slug)?.groupValues?.get(1)
             ?: return emptyList()
 
         val catPath = pageUrl.substringBeforeLast('/')          // …/hy/serialner
-        val epRe = Regex("""href="(https?://[^"]*/serialner/\d+-(.+?)-seri[ya]+-(\d+)\.html)"""")
+        val catSeg = catPath.substringAfterLast('/')            // serialner, doramaner-hayeren, …
+        val epRe = Regex("""href="(https?://[^"]*/${Regex.escape(catSeg)}/\d+-(.+?)-seri[ya]+-(\d+)\.html)"""")
 
         val byNum = LinkedHashMap<Int, String>()                // номер серии -> URL (первый вариант)
         var page = 1
