@@ -146,6 +146,23 @@ abstract class DleProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // --- Эпизод сериала: data — уже готовый источник (из parseEpisodes), а не DLE-страница. ---
+        // 1) Прямой поток (films.bz interkh master.m3u8 / hayertv Stream *.mp4).
+        if (isDirectMedia(data)) {
+            val type = if (data.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            callback(
+                newExtractorLink(name, name, data, type) {
+                    this.referer = originOf(data).ifBlank { mainUrl }
+                }
+            )
+            return true
+        }
+        // 2) Сторонний эмбед эпизода (youtube/ok.ru/fsst-embed/…) — не страница сайта.
+        if (!data.startsWith(mainUrl)) {
+            return resolveEpisodeSource(data, subtitleCallback, callback)
+        }
+
+        // --- Иначе data — DLE-страница (фильм или корень сериала): скрейпим эмбеды с неё. ---
         val doc = app.get(data, referer = mainUrl).document
         val pageHtml = doc.html()
 
@@ -224,6 +241,69 @@ abstract class DleProvider : MainAPI() {
             }
         }
         return found
+    }
+
+    /** Ссылка ведёт прямо на медиа-файл (плейлист/видео), а не на HTML-страницу. */
+    private fun isDirectMedia(url: String) =
+        url.contains(".m3u8") || Regex("""\.mp4(?:$|[?/#])""").containsMatchIn(url)
+
+    /**
+     * Достаёт поток из стороннего источника эпизода (значение <option> / const episodes).
+     * youtube/ok.ru/vk/rutube — через встроенные экстракторы CloudStream; наши балансёры
+     * (fsst→incvideo, ortified, armdb, stravers) — своим парсером extractFromEmbed.
+     */
+    private suspend fun resolveEpisodeSource(
+        url: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val host = url.substringAfter("://").substringBefore("/")
+        if (Regex("""youtube|youtu\.be|ok\.ru|vk\.|vkvideo|rutube|dailymotion|mail\.ru""", RegexOption.IGNORE_CASE)
+                .containsMatchIn(host)
+        ) {
+            return runCatching { loadExtractor(url, mainUrl, subtitleCallback, callback) }.getOrDefault(false)
+        }
+        return try {
+            val body = app.get(url, referer = mainUrl).text
+            extractFromEmbed(body, url, "", callback)
+        } catch (e: Exception) {
+            logError(e); false
+        }
+    }
+
+    /**
+     * Строит Episode из (заголовок, ссылка-источник). Номер серии/сезон берём из заголовка
+     * (арм. «Սերիա N»/«Սեզոն N» и рус. «N серия»/«N сезон»), либо из явных параметров.
+     */
+    protected fun buildEpisode(
+        title: String,
+        dataUrl: String,
+        epNum: Int? = null,
+        seasonNum: Int? = null
+    ): Episode? {
+        val raw = dataUrl.trim()
+        if (raw.isBlank()) return null
+        val u = when {
+            raw.startsWith("//") -> "https:$raw"
+            raw.startsWith("http") -> raw
+            else -> fixUrl(raw)
+        }
+        val ep = epNum
+            ?: Regex("""(?:Սերիա|սերիա|серия|episode)[\s:]*?(\d+)""", RegexOption.IGNORE_CASE)
+                .find(title)?.groupValues?.get(1)?.toIntOrNull()
+            ?: Regex("""(\d+)\s*(?:серия|սերիա)""", RegexOption.IGNORE_CASE)
+                .find(title)?.groupValues?.get(1)?.toIntOrNull()
+            ?: Regex("""\d+""").find(title.substringAfterLast('-')).let { it?.value?.toIntOrNull() }
+        val season = seasonNum
+            ?: Regex("""(?:Սեզոն|сезон|season)[\s:]*?(\d+)""", RegexOption.IGNORE_CASE)
+                .find(title)?.groupValues?.get(1)?.toIntOrNull()
+            ?: Regex("""(\d+)\s*(?:сезон|սեզոն|season)""", RegexOption.IGNORE_CASE)
+                .find(title)?.groupValues?.get(1)?.toIntOrNull()
+        return newEpisode(u) {
+            this.name = title.trim().ifBlank { ep?.let { "Серия $it" } ?: "Серия" }
+            this.episode = ep
+            this.season = season
+        }
     }
 
     /** Имя источника в списке CloudStream: провайдер + метка озвучки (если есть). */
